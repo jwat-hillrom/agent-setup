@@ -1,0 +1,9 @@
+{
+  "name": "agent-setup",
+  "version": "0.1.0",
+  "description": "Set up a repository for AI-assisted work in VS Code Copilot Chat: curated skills and agents from Pocock, ECC, Taste and Baxter.",
+  "type": "module",
+  "bin": { "agent-setup": "./agent-setup.mjs" },
+  "engines": { "node": ">=18" },
+  "scripts": { "test": "node --test test/" }
+}

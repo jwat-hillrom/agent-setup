@@ -1,0 +1,76 @@
+{
+  "instructions": "agent-setup.instructions.md",
+  "sources": [
+    {
+      "id": "pocock",
+      "prefix": "pocock",
+      "repo": "https://github.com/mattpocock/skills",
+      "vscodePlugin": "github.com/mattpocock/skills",
+      "discover": { "pluginJson": ".claude-plugin/plugin.json" }
+    },
+    {
+      "id": "ecc",
+      "prefix": "ecc",
+      "repo": "https://github.com/affaan-m/ECC",
+      "discover": { "skillsDir": "skills" },
+      "include": [
+        "accessibility",
+        "api-design",
+        "backend-patterns",
+        "browser-qa",
+        "csharp-testing",
+        "database-migrations",
+        "deployment-patterns",
+        "docker-patterns",
+        "dotnet-patterns",
+        "e2e-testing",
+        "error-handling",
+        "frontend-a11y",
+        "frontend-patterns",
+        "golang-patterns",
+        "golang-testing",
+        "postgres-patterns",
+        "python-patterns",
+        "python-testing",
+        "react-patterns",
+        "react-performance",
+        "react-testing",
+        "security-review"
+      ],
+      "agents": {
+        "dir": "agents",
+        "include": [
+          "a11y-architect",
+          "build-error-resolver",
+          "csharp-reviewer",
+          "database-reviewer",
+          "e2e-runner",
+          "go-build-resolver",
+          "go-reviewer",
+          "performance-optimizer",
+          "python-reviewer",
+          "react-build-resolver",
+          "react-reviewer",
+          "security-reviewer",
+          "silent-failure-hunter",
+          "typescript-reviewer"
+        ]
+      }
+    },
+    {
+      "id": "taste",
+      "prefix": "taste",
+      "repo": "https://github.com/leonxlnx/taste-skill",
+      "discover": { "paths": ["skills/taste-skill"] },
+      "ignore": [".taste-skill/"]
+    },
+    {
+      "id": "baxter",
+      "prefix": "baxter",
+      "repo": "https://github.com/jwat-hillrom/agent-skills",
+      "optional": true,
+      "vscodePlugin": "github.com/jwat-hillrom/agent-skills",
+      "discover": { "pluginJson": ".claude-plugin/plugin.json" }
+    }
+  ]
+}
