@@ -21,9 +21,13 @@ param(
     [switch]$NoPath
 )
 
+# Everything runs in a child scope so `irm | iex` does not leak strict mode or $ErrorActionPreference into the caller's session.
+& {
+param([string]$Repo, [string]$ToolDir, [string]$BinDir, [bool]$Yes, [bool]$NoPath)
+
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-$MinNodeMajor = 18
+$MinNodeMajor = 20
 
 function Invoke-Native {
     # Windows PowerShell 5.1 turns native stderr into terminating errors; judge by exit code instead.
@@ -33,7 +37,8 @@ function Invoke-Native {
 }
 
 function Update-SessionPath {
-    $env:Path = [Environment]::GetEnvironmentVariable('Path', 'Machine') + ';' + [Environment]::GetEnvironmentVariable('Path', 'User')
+    $parts = @($env:Path -split ';') + @([Environment]::GetEnvironmentVariable('Path', 'Machine') -split ';') + @([Environment]::GetEnvironmentVariable('Path', 'User') -split ';')
+    $env:Path = (($parts | Where-Object { $_ } | Select-Object -Unique) -join ';')
 }
 
 function Install-WithWinget([string]$Id, [string]$Label) {
@@ -60,24 +65,34 @@ if ((Get-NodeMajor) -lt $MinNodeMajor) { Install-WithWinget 'OpenJS.NodeJS.LTS' 
 if ((Get-NodeMajor) -lt $MinNodeMajor) { throw "Node.js $MinNodeMajor or newer is not on PATH yet. Open a new terminal and re-run." }
 
 if (Test-Path -LiteralPath (Join-Path $ToolDir '.git')) {
-    Invoke-Native git -C $ToolDir pull --ff-only --quiet
+    try { Invoke-Native git -C $ToolDir pull --ff-only --quiet }
+    catch { Write-Warning "Could not update the existing tool clone, continuing with what is installed: $_" }
 } else {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ToolDir) | Out-Null
-    Invoke-Native git clone --quiet --depth 1 $Repo $ToolDir
+    Invoke-Native git clone --quiet --depth 1 -- $Repo $ToolDir
 }
 
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $shim = Join-Path $BinDir 'agent-setup.cmd'
-Set-Content -Path $shim -Encoding ASCII -Value "@echo off`r`nnode `"$ToolDir\agent-setup.mjs`" %*"
+$cmdPath = $ToolDir.Replace('%', '%%')
+Set-Content -LiteralPath $shim -Encoding ASCII -Value "@echo off`r`nnode `"$cmdPath\agent-setup.mjs`" %*"
 
 if (-not $NoPath) {
-    $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-    if (($userPath -split ';') -notcontains $BinDir) {
-        [Environment]::SetEnvironmentVariable('Path', ($userPath.TrimEnd(';') + ';' + $BinDir), 'User')
+    # Read the raw registry value so %VARS% in the user's PATH are preserved, then tell running apps about the change.
+    $key = if ($env:AGENT_SETUP_ENV_KEY) { $env:AGENT_SETUP_ENV_KEY } else { 'HKCU:\Environment' }
+    $raw = [string](Get-Item -LiteralPath $key).GetValue('Path', '', 'DoNotExpandEnvironmentNames')
+    $entries = @($raw -split ';' | Where-Object { $_ })
+    $present = $entries | Where-Object { [Environment]::ExpandEnvironmentVariables($_).TrimEnd('\') -ieq $BinDir.TrimEnd('\') }
+    if (-not $present) {
+        Set-ItemProperty -LiteralPath $key -Name Path -Value (($entries + $BinDir) -join ';') -Type ExpandString
+        Add-Type -Namespace AgentSetup -Name Native -MemberDefinition '[DllImport("user32.dll", SetLastError=true, CharSet=CharSet.Auto)] public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint Msg, UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out UIntPtr lpdwResult);'
+        $result = [UIntPtr]::Zero
+        [void][AgentSetup.Native]::SendMessageTimeout([IntPtr]0xffff, 0x1A, [UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$result)
         Update-SessionPath
     }
 }
 
-Write-Host "agent-setup installed. Open a new terminal, go to a repository, and run: agent-setup"
+Write-Host "agent-setup installed. Open a new terminal (restart VS Code to use it from its terminal), go to a repository, and run: agent-setup"
 Write-Host "On first run you may be asked to sign in to GitHub so the private Baxter skills can be fetched."
 Write-Host "The Taste skill's own scripts also need Node 22+ and Chrome, Edge or Chromium."
+} -Repo $Repo -ToolDir $ToolDir -BinDir $BinDir -Yes $Yes.IsPresent -NoPath $NoPath.IsPresent

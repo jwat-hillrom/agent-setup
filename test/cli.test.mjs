@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { cpSync, existsSync, readFileSync, renameSync } from "node:fs";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { addTag, git, makeRemote, makeRepo, tempDir, writeTree } from "./helpers.mjs";
@@ -85,6 +85,27 @@ function runTool(fx, cli, repo, ...args) {
     env: { ...process.env, HOME: fx.home, USERPROFILE: fx.home },
   });
 }
+
+test("running outside a git repository gives a plain error", () => {
+  const fx = fixtures();
+  const notRepo = tempDir("agent-setup-norepo-");
+
+  const r = spawnSync(process.execPath, [CLI, "--repo", notRepo, "--config", fx.configPath, "--cache-dir", fx.cache, "--no-self-update"], { encoding: "utf8" });
+
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /error: .* is not inside a git repository/);
+});
+
+test("a broken optional source is reported with git's reason, but a bug while reading it is not swallowed", () => {
+  const fx = fixtures({ privateSource: "unreachable" });
+  const out = run(fx, makeRepo());
+  assert.match(out, /warning: private: could not be fetched, skipped \(.*(nope|does not appear|not found|No such|Could not read)/i);
+
+  const good = fixtures({ privateSource: "ok" });
+  addTag(good.privateRemote, "v1.0.1", { ".claude-plugin/plugin.json": "{ not json" });
+  const r = spawnSync(process.execPath, [CLI, "--repo", makeRepo(), "--config", good.configPath, "--cache-dir", good.cache, "--no-self-update", "--update"], { encoding: "utf8" });
+  assert.equal(r.status, 1);
+});
 
 test("pulls the tool's own clone before running, then continues with the install", () => {
   const fx = fixtures();

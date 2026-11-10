@@ -38,10 +38,7 @@ function main() {
   if (values.help) return console.log(USAGE);
   if (!values["no-self-update"] && !process.env.AGENT_SETUP_UPDATED && selfUpdate(HERE)) rerun(process.argv.slice(1));
 
-  const repoDir = execFileSync("git", ["rev-parse", "--show-toplevel"], {
-    cwd: resolve(values.repo ?? process.cwd()),
-    encoding: "utf8",
-  }).trim();
+  const repoDir = findRepoRoot(resolve(values.repo ?? process.cwd()));
 
   if (values.uninstall) {
     uninstall(repoDir);
@@ -62,31 +59,30 @@ function main() {
   const retain = [];
   for (const src of active) {
     const before = previous.sources[src.id];
+    let acquired;
     try {
-      const { locked, planSource } = loadSource(src, before);
-      lockSources[src.id] = locked;
-      planSources.push(planSource);
+      acquired = acquire(src, before);
     } catch (err) {
       if (!src.optional) throw err;
-      console.log(`warning: ${src.id}: could not be fetched, skipped (${firstLine(err.message)})`);
+      console.log(`warning: ${src.id}: could not be fetched, skipped (${firstLine(err.stderr || err.message)})`);
       retain.push(src.prefix);
       if (before) lockSources[src.id] = before;
+      continue;
     }
+    const { locked, planSource } = describeSource(src, acquired, before);
+    lockSources[src.id] = locked;
+    planSources.push(planSource);
   }
 
-  function loadSource(src, before) {
-    let root;
-    let locked;
-    if (src.path) {
-      root = resolve(configDir, src.path);
-      locked = { path: src.path };
-    } else {
-      const reuse = !values.update && before?.repo === src.repo && isReleaseTag(before.tag ?? "") && before.tag;
-      const tag = reuse || resolveLatestTag(src.repo);
-      const fetched = fetchTag(src.repo, tag, cacheDir, src.id);
-      root = fetched.dir;
-      locked = { repo: src.repo, tag, sha: fetched.sha };
-    }
+  function acquire(src, before) {
+    if (src.path) return { root: resolve(configDir, src.path), locked: { path: src.path } };
+    const reuse = !values.update && before?.repo === src.repo && isReleaseTag(before.tag ?? "") && before.tag;
+    const tag = reuse || resolveLatestTag(src.repo);
+    const fetched = fetchTag(src.repo, tag, cacheDir, src.id);
+    return { root: fetched.dir, locked: { repo: src.repo, tag, sha: fetched.sha } };
+  }
+
+  function describeSource(src, { root, locked }, before) {
     const skills = discoverSkills(root, src.discover);
     const agents = src.agents ? discoverAgents(root, src.agents.dir) : [];
     for (const [kind, found, include, catalogKey] of [
@@ -150,6 +146,14 @@ function main() {
 const USAGE = `Usage: agent-setup [--repo <dir>] [--skip <id,...>] [--update] [--dry-run] [--uninstall] [--no-self-update]`;
 
 const firstLine = (text) => String(text).split(/\r?\n/).find((l) => l.trim())?.trim() ?? "unknown error";
+
+function findRepoRoot(dir) {
+  try {
+    return execFileSync("git", ["rev-parse", "--show-toplevel"], { cwd: dir, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    throw new Error(`${dir} is not inside a git repository`);
+  }
+}
 
 try {
   main();

@@ -23,7 +23,7 @@ macOS / Linux:
 curl -fsSL https://raw.githubusercontent.com/jwat-hillrom/agent-setup/main/install.sh | bash
 ```
 
-The installer checks Git and Node 18+ (on confirmation it installs them with winget or Homebrew; on Linux it tells you what to install), clones this tool to a per-user folder, and adds an `agent-setup` command. Re-running it updates everything. If your security tooling blocks piping a script into the shell, download `install.ps1` or `install.sh` and run it directly.
+The installer checks Git and Node 20+ (on confirmation it installs them with winget or Homebrew; on Linux it tells you what to install), clones this tool to a per-user folder, and adds an `agent-setup` command. Re-running it updates everything. If your security tooling blocks piping a script into the shell, download `install.ps1` or `install.sh` and run it directly.
 
 The Taste skill's own scripts need Node 22+ and Chrome, Edge or Chromium.
 
@@ -36,9 +36,13 @@ agent-setup
 
 Then run `/pocock-setup-matt-pocock-skills` once in the repo. The command pulls its own clone first (quietly, and it carries on if offline), so the tool stays current.
 
-On first run you may be asked to sign in to GitHub: the Baxter skills come from a private repository. If that source can't be fetched (no access, offline), it is skipped with a warning and anything it installed earlier is kept. Every other source is required and stops the run before anything is written.
+On first run you may be asked to sign in to GitHub: the Baxter skills come from a private repository. On Windows, Git Credential Manager opens a browser sign-in. On macOS and Linux, GitHub does not accept passwords for git, so run `gh auth login` or use a credential helper with a personal access token (authorize it for SSO if your organization requires that). If that source can't be fetched (no access, offline), it is skipped with a warning and anything it installed earlier is kept. Every other source is required and stops the run before anything is written.
 
-Options: `--repo <dir>`, `--skip <id,...>` (removes that source's items), `--update`, `--dry-run`, `--uninstall`, `--no-self-update`, `--cache-dir <dir>`.
+Options: `--repo <dir>`, `--skip <id,...>` (removes that source's items), `--update`, `--dry-run`, `--uninstall`, `--no-self-update`. Test seams: `--config <file>`, `--cache-dir <dir>`; installer flags `-ToolDir`, `-BinDir`, `-Repo`, `-NoPath`, `-Yes` (`--tool-dir`, `--bin-dir`, `--repo`, `--no-path`, `--yes` in `install.sh`).
+
+## Trust model
+
+The tool updates itself by fast-forwarding its own clone of this repository's default branch before each run, then runs the result. Anyone who can push to that branch can change what runs on every workstation, so keep the branch protected. The sources it installs are different: they are pinned to release tags, and a new tag only reaches a repo with `--update`.
 
 ## How it behaves
 

@@ -9,8 +9,12 @@ TOOL_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agent-setup/tool"
 BIN_DIR="$HOME/.local/bin"
 YES=0
 NO_PATH=0
-MIN_NODE_MAJOR=18
+MIN_NODE_MAJOR=20
 
+# Quotes a value so sh reads it back literally, whatever characters it contains.
+sq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
+
+main() {
 while [ $# -gt 0 ]; do
   case "$1" in
     --yes) YES=1 ;;
@@ -38,9 +42,14 @@ node_major() {
 need_tools() {
   if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
     confirm "Git and Node $MIN_NODE_MAJOR+ are required. Install them with Homebrew?" || { echo "Git and Node are required." >&2; exit 1; }
-    brew install git node
+    brew install git node < /dev/null
+    if [ "$(node_major)" -lt "$MIN_NODE_MAJOR" ]; then brew upgrade node < /dev/null; fi
   else
-    echo "Git and Node $MIN_NODE_MAJOR or newer are required. Install them with your package manager (https://nodejs.org/en/download), then re-run." >&2
+    echo "Git and Node $MIN_NODE_MAJOR or newer are required." >&2
+    echo "  Debian/Ubuntu: sudo apt-get install git, then Node via https://nodejs.org/en/download (distro Node is often too old)." >&2
+    echo "  Fedora/RHEL:   sudo dnf install git nodejs" >&2
+    echo "  Any distro:    nvm (https://github.com/nvm-sh/nvm) then 'nvm install --lts'" >&2
+    echo "Then re-run this installer." >&2
     exit 1
   fi
 }
@@ -49,23 +58,29 @@ if ! command -v git >/dev/null 2>&1 || [ "$(node_major)" -lt "$MIN_NODE_MAJOR" ]
 [ "$(node_major)" -ge "$MIN_NODE_MAJOR" ] || { echo "Node $MIN_NODE_MAJOR or newer is not on PATH yet. Open a new terminal and re-run." >&2; exit 1; }
 
 if [ -d "$TOOL_DIR/.git" ]; then
-  git -C "$TOOL_DIR" pull --ff-only --quiet
+  git -C "$TOOL_DIR" pull --ff-only --quiet < /dev/null || echo "warning: could not update the existing tool clone, continuing with what is installed" >&2
 else
   mkdir -p "$(dirname "$TOOL_DIR")"
-  git clone --quiet --depth 1 "$REPO" "$TOOL_DIR"
+  git clone --quiet --depth 1 -- "$REPO" "$TOOL_DIR" < /dev/null
 fi
 
 mkdir -p "$BIN_DIR"
-printf '#!/bin/sh\nexec node "%s/agent-setup.mjs" "$@"\n' "$TOOL_DIR" > "$BIN_DIR/agent-setup"
+printf '#!/bin/sh\nexec node %s "$@"\n' "$(sq "$TOOL_DIR/agent-setup.mjs")" > "$BIN_DIR/agent-setup"
 chmod +x "$BIN_DIR/agent-setup"
 
 if [ "$NO_PATH" = 0 ]; then
   case ":$PATH:" in
     *":$BIN_DIR:"*) ;;
     *)
-      case "${SHELL:-}" in */zsh) rc="$HOME/.zshrc" ;; *) rc="$HOME/.bashrc" ;; esac
-      if confirm "Add $BIN_DIR to PATH in $rc?"; then
-        printf '\nexport PATH="%s:$PATH"\n' "$BIN_DIR" >> "$rc"
+      case "${SHELL:-}" in
+        */zsh) rc="$HOME/.zshrc" ;;
+        *) if [ "$(uname)" = "Darwin" ]; then rc="$HOME/.bash_profile"; else rc="$HOME/.bashrc"; fi ;;
+      esac
+      line="export PATH=$(sq "$BIN_DIR"):\"\$PATH\""
+      if grep -qsF -- "$line" "$rc"; then
+        :
+      elif confirm "Add $BIN_DIR to PATH in $rc?"; then
+        printf '\n%s\n' "$line" >> "$rc"
       else
         echo "Add $BIN_DIR to PATH yourself to use the agent-setup command."
       fi
@@ -74,5 +89,8 @@ if [ "$NO_PATH" = 0 ]; then
 fi
 
 echo "agent-setup installed. Open a new terminal, go to a repository, and run: agent-setup"
-echo "On first run you may be asked to sign in to GitHub so the private Baxter skills can be fetched."
+echo "On first run you may be asked to sign in to GitHub so the private Baxter skills can be fetched (GitHub does not accept passwords for git: use 'gh auth login' or a credential helper with a personal access token)."
 echo "The Taste skill's own scripts also need Node 22+ and Chrome, Edge or Chromium."
+}
+
+main "$@"
