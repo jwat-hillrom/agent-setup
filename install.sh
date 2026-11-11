@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs agent-setup on macOS or Linux: checks Git and Node, fetches the tool, adds an `agent-setup` command.
 # Safe to re-run. Usage: install.sh [--yes] [--no-path] [--repo URL] [--tool-dir DIR] [--bin-dir DIR]
-#   curl -fsSL https://raw.githubusercontent.com/jwat-hillrom/agent-setup/main/install.sh | bash
+#   curl -fsSL https://github.com/jwat-hillrom/agent-setup/releases/latest/download/install.sh | bash
 set -eu
 
 REPO="${AGENT_SETUP_REPO:-https://github.com/jwat-hillrom/agent-setup.git}"
@@ -57,12 +57,19 @@ need_tools() {
 if ! command -v git >/dev/null 2>&1 || [ "$(node_major)" -lt "$MIN_NODE_MAJOR" ]; then need_tools; fi
 [ "$(node_major)" -ge "$MIN_NODE_MAJOR" ] || { echo "Node $MIN_NODE_MAJOR or newer is not on PATH yet. Open a new terminal and re-run." >&2; exit 1; }
 
-if [ -d "$TOOL_DIR/.git" ]; then
-  git -C "$TOOL_DIR" pull --ff-only --quiet < /dev/null || echo "warning: could not update the existing tool clone, continuing with what is installed" >&2
-else
+if [ ! -d "$TOOL_DIR/.git" ]; then
   mkdir -p "$(dirname "$TOOL_DIR")"
-  git clone --quiet --depth 1 -- "$REPO" "$TOOL_DIR" < /dev/null
+  git clone --quiet --no-checkout --depth 1 -- "$REPO" "$TOOL_DIR" < /dev/null
 fi
+# Installs run the newest release tag, never untagged commits on the default branch.
+git -C "$TOOL_DIR" fetch --quiet --force --depth 1 origin '+refs/tags/*:refs/tags/*' < /dev/null ||
+  echo "warning: could not fetch release tags, continuing with what is installed" >&2
+tag="$(git -C "$TOOL_DIR" tag --list | grep -E '^v?[0-9]+\.[0-9]+\.[0-9]+$' |
+  awk '{ v = $0; sub(/^v/, "", v); split(v, p, "."); printf "%d %d %d %s\n", p[1], p[2], p[3], $0 }' |
+  sort -k1,1n -k2,2n -k3,3n | tail -n 1 | cut -d' ' -f4)" || true
+[ -n "$tag" ] || { echo "No release tag (vX.Y.Z) found in $REPO." >&2; exit 1; }
+git -C "$TOOL_DIR" -c advice.detachedHead=false checkout --quiet --force --detach "$tag" < /dev/null
+git -C "$TOOL_DIR" config agent-setup.install true
 
 mkdir -p "$BIN_DIR"
 printf '#!/bin/sh\nexec node %s "$@"\n' "$(sq "$TOOL_DIR/agent-setup.mjs")" > "$BIN_DIR/agent-setup"

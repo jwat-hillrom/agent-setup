@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { cpSync, existsSync, readFileSync, renameSync } from "node:fs";
+import { cpSync, existsSync, readdirSync, readFileSync, renameSync } from "node:fs";
 import { execFileSync, spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -76,8 +76,23 @@ function toolClone() {
   addTag(remote, "v0.0.1", {});
   const clone = tempDir("agent-setup-tool-");
   git(clone, "clone", "-q", remote, ".");
+  git(clone, "config", "agent-setup.install", "true");
   return { remote, clone, cli: join(clone, "agent-setup.mjs") };
 }
+
+function commitUntagged(remote, files) {
+  writeTree(remote, files);
+  git(remote, "add", "-A");
+  git(remote, "commit", "-q", "-m", "untagged");
+}
+
+function pin(fx, pins) {
+  const config = JSON.parse(readFileSync(fx.configPath, "utf8"));
+  for (const s of config.sources) if (s.id in pins) s.tag = pins[s.id];
+  writeTree(dirname(fx.configPath), { "config.json": JSON.stringify(config) });
+}
+
+const readConfig = (fx) => JSON.parse(readFileSync(fx.configPath, "utf8"));
 
 function runTool(fx, cli, repo, ...args) {
   return execFileSync(process.execPath, [cli, "--repo", repo, "--config", fx.configPath, "--cache-dir", fx.cache, ...args], {
@@ -107,16 +122,122 @@ test("a broken optional source is reported with git's reason, but a bug while re
   assert.equal(r.status, 1);
 });
 
-test("pulls the tool's own clone before running, then continues with the install", () => {
+test("an installed tool clone moves to the newest release tag before running, ignoring untagged commits", () => {
   const fx = fixtures();
   const tool = toolClone();
   addTag(tool.remote, "v0.0.2", { "NEWER.txt": "x\n" });
+  commitUntagged(tool.remote, { "UNRELEASED.txt": "x\n" });
   const repo = makeRepo();
 
   runTool(fx, tool.cli, repo);
 
   assert.ok(existsSync(join(tool.clone, "NEWER.txt")));
+  assert.ok(!existsSync(join(tool.clone, "UNRELEASED.txt")), "untagged commit reached an install");
+  assert.equal(git(tool.clone, "rev-parse", "HEAD"), git(tool.remote, "rev-parse", "v0.0.2^{commit}"));
   assert.ok(existsSync(join(repo, ".github/skills/pocock-tdd/SKILL.md")));
+});
+
+test("a development clone (not marked by an installer) never updates itself", () => {
+  const fx = fixtures();
+  const tool = toolClone();
+  git(tool.clone, "config", "--unset", "agent-setup.install");
+  addTag(tool.remote, "v0.0.2", { "NEWER.txt": "x\n" });
+
+  runTool(fx, tool.cli, makeRepo());
+
+  assert.ok(!existsSync(join(tool.clone, "NEWER.txt")));
+});
+
+test("a source pinned in config.json installs that tag even when newer releases exist, and --update says so", () => {
+  const fx = fixtures();
+  addTag(fx.pocock, "v1.1.0", { "skills/engineering/tdd/NEW.md": "new\n" });
+  pin(fx, { pocock: "v1.0.0" });
+  const repo = makeRepo();
+
+  const out = run(fx, repo, "--update");
+
+  assert.ok(!existsSync(join(repo, ".github/skills/pocock-tdd/NEW.md")));
+  assert.equal(JSON.parse(readFileSync(join(repo, ".github/agent-setup.lock.json"), "utf8")).sources.pocock.tag, "v1.0.0");
+  assert.match(out, /notice: pocock: pinned to v1\.0\.0 in config\.json/);
+});
+
+test("a pin that is not a plain release tag is rejected before anything is written", () => {
+  const fx = fixtures();
+  pin(fx, { pocock: "../../outside" });
+  const repo = makeRepo();
+
+  const r = spawnSync(process.execPath, [CLI, "--repo", repo, "--config", fx.configPath, "--cache-dir", fx.cache, "--no-self-update"], { encoding: "utf8" });
+
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /pinned tag "\.\.\/\.\.\/outside"/);
+  assert.ok(!existsSync(join(repo, ".github")));
+});
+
+test("--bump moves pins to the newest releases and reports allowlist drift; --dry-run leaves config alone", () => {
+  const fx = fixtures();
+  pin(fx, { pocock: "v1.0.0", ecc: "v2.2.3", taste: "v2.5.1" });
+  addTag(fx.ecc, "v2.3.0", {
+    "skills/brand-new/SKILL.md": skillMd("brand-new"),
+    "agents/fresh-agent.md": "---\nname: fresh-agent\ndescription: d\n---\nbody\n",
+  });
+  git(fx.ecc, "rm", "-q", "-r", "skills/golang-testing");
+  git(fx.ecc, "commit", "-q", "-m", "drop");
+  git(fx.ecc, "tag", "-f", "v2.3.0");
+
+  const dry = execFileSync(process.execPath, [CLI, "--bump", "--dry-run", "--config", fx.configPath, "--cache-dir", fx.cache], { encoding: "utf8" });
+  assert.match(dry, /ecc: v2\.2\.3 -> v2\.3\.0/);
+  assert.equal(readConfig(fx).sources.find((s) => s.id === "ecc").tag, "v2.2.3");
+
+  const out = execFileSync(process.execPath, [CLI, "--bump", "--config", fx.configPath, "--cache-dir", fx.cache], { encoding: "utf8" });
+  assert.match(out, /pocock: v1\.0\.0 \(already newest\)/);
+  assert.match(out, /notice: ecc: 1 new upstream skills not on the allowlist: brand-new/);
+  assert.match(out, /notice: ecc: 1 new upstream agents not on the allowlist: fresh-agent/);
+  assert.match(out, /warning: ecc: allowlisted skills missing in v2\.3\.0: golang-testing/);
+  assert.equal(readConfig(fx).sources.find((s) => s.id === "ecc").tag, "v2.3.0");
+});
+
+test("--bump refuses to edit the config of an installed tool clone", () => {
+  const tool = toolClone();
+  writeTree(tool.clone, { "config.json": JSON.stringify({ sources: [] }) });
+
+  const r = spawnSync(process.execPath, [tool.cli, "--bump"], { encoding: "utf8" });
+
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /development clone/);
+});
+
+test("after a successful run, cached checkouts of other tags of the same source are removed", () => {
+  const fx = fixtures();
+  pin(fx, { pocock: "v1.0.0" });
+  run(fx, makeRepo());
+  const cached = () => readdirSync(fx.cache).filter((n) => n.startsWith("pocock-"));
+  assert.equal(cached().length, 1);
+  assert.match(cached()[0], /-v1\.0\.0$/);
+
+  addTag(fx.pocock, "v1.1.0", {});
+  pin(fx, { pocock: "v1.1.0" });
+  run(fx, makeRepo());
+
+  assert.deepEqual(cached().map((n) => n.replace(/^pocock-\w+-/, "")), ["v1.1.0"]);
+  assert.ok(readdirSync(fx.cache).some((n) => n.startsWith("ecc-")), "other sources' caches were removed");
+});
+
+test("installed skills and agents refer to their siblings by prefixed name", () => {
+  const fx = fixtures();
+  addTag(fx.pocock, "v1.0.1", {
+    "skills/engineering/tdd/SKILL.md": `---\nname: tdd\ndescription: d\n---\nAlign with /grilling first. Each label is one of \`grilling\` or \`task\`.\n`,
+  });
+  addTag(fx.ecc, "v2.2.4", {
+    "agents/go-reviewer.md": "---\nname: go-reviewer\ndescription: Reviews Go.\n---\nSee skill: `golang-testing`. Not installed: skill: `tdd-workflow`.\n",
+  });
+  const repo = makeRepo();
+
+  run(fx, repo);
+
+  const tdd = readFileSync(join(repo, ".github/skills/pocock-tdd/SKILL.md"), "utf8");
+  assert.match(tdd, /Align with \/pocock-grilling first\. Each label is one of `grilling` or `task`\./);
+  const agent = readFileSync(join(repo, ".github/agents/ecc-go-reviewer.agent.md"), "utf8");
+  assert.match(agent, /See skill: `ecc-golang-testing`\. Not installed: skill: `tdd-workflow`\./);
 });
 
 test("--no-self-update leaves the tool clone alone, and an unreachable tool remote does not stop the install", () => {

@@ -1,16 +1,17 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { applyPlan, readLock, uninstall } from "./lib/apply.mjs";
-import { fetchTag, resolveLatestTag } from "./lib/fetch.mjs";
+import { fetchTag, pruneCache, resolveLatestTag } from "./lib/fetch.mjs";
 import { findUserLevelDuplicates } from "./lib/duplicates.mjs";
 import { planInstall } from "./lib/plan.mjs";
 import { isReleaseTag } from "./lib/release.mjs";
-import { rerun, selfUpdate } from "./lib/selfupdate.mjs";
+import { buildRewrites } from "./lib/rewrite.mjs";
+import { isInstallClone, rerun, selfUpdate } from "./lib/selfupdate.mjs";
 import { discoverAgents, discoverSkills } from "./lib/sources.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -29,6 +30,7 @@ function main() {
       "cache-dir": { type: "string" },
       skip: { type: "string", multiple: true },
       update: { type: "boolean" },
+      bump: { type: "boolean" },
       "dry-run": { type: "boolean" },
       uninstall: { type: "boolean" },
       "no-self-update": { type: "boolean" },
@@ -36,7 +38,11 @@ function main() {
     },
   });
   if (values.help) return console.log(USAGE);
-  if (!values["no-self-update"] && !process.env.AGENT_SETUP_UPDATED && selfUpdate(HERE)) rerun(process.argv.slice(1));
+  if (!values["no-self-update"] && !values.bump && !process.env.AGENT_SETUP_UPDATED && selfUpdate(HERE)) rerun(process.argv.slice(1));
+
+  const configPath = resolve(values.config ?? join(HERE, "config.json"));
+  const cacheDir = resolve(values["cache-dir"] ?? defaultCacheDir());
+  if (values.bump) return bump(configPath, cacheDir, values["dry-run"]);
 
   const repoDir = findRepoRoot(resolve(values.repo ?? process.cwd()));
 
@@ -45,10 +51,8 @@ function main() {
     return console.log("uninstalled");
   }
 
-  const configPath = resolve(values.config ?? join(HERE, "config.json"));
   const configDir = dirname(configPath);
   const config = JSON.parse(readFileSync(configPath, "utf8"));
-  const cacheDir = resolve(values["cache-dir"] ?? defaultCacheDir());
   const skip = new Set((values.skip ?? []).flatMap((s) => s.split(",")));
   const previous = readLock(repoDir);
 
@@ -76,8 +80,15 @@ function main() {
 
   function acquire(src, before) {
     if (src.path) return { root: resolve(configDir, src.path), locked: { path: src.path } };
-    const reuse = !values.update && before?.repo === src.repo && isReleaseTag(before.tag ?? "") && before.tag;
-    const tag = reuse || resolveLatestTag(src.repo);
+    let tag;
+    if (src.tag) {
+      if (!isReleaseTag(src.tag)) throw new Error(`${src.id}: pinned tag "${src.tag}" in config.json is not a vX.Y.Z release tag`);
+      if (values.update) notices.push(`${src.id}: pinned to ${src.tag} in config.json, so --update does not change it`);
+      tag = src.tag;
+    } else {
+      const reuse = !values.update && before?.repo === src.repo && isReleaseTag(before.tag ?? "") && before.tag;
+      tag = reuse || resolveLatestTag(src.repo);
+    }
     const fetched = fetchTag(src.repo, tag, cacheDir, src.id);
     return { root: fetched.dir, locked: { repo: src.repo, tag, sha: fetched.sha } };
   }
@@ -104,6 +115,9 @@ function main() {
       agents,
       agentInclude: src.agents?.include,
       ignore: src.ignore,
+      root,
+      repo: locked.repo,
+      tag: locked.tag,
     };
     return { locked, planSource };
   }
@@ -131,7 +145,9 @@ function main() {
     sources: lockSources,
     ignore: plan.ignore,
     retain,
+    rewrites: buildRewrites(plan, planSources),
   });
+  for (const s of planSources) if (s.repo && s.tag) pruneCache(s.repo, s.tag, cacheDir, s.id);
   for (const w of result.warnings) console.log(`warning: ${w}`);
   for (const w of findUserLevelDuplicates({ home: homedir(), sources: active, entries: plan.entries })) {
     console.log(`warning: ${w}`);
@@ -143,7 +159,62 @@ function main() {
   }
 }
 
-const USAGE = `Usage: agent-setup [--repo <dir>] [--skip <id,...>] [--update] [--dry-run] [--uninstall] [--no-self-update]`;
+const USAGE = `Usage: agent-setup [--repo <dir>] [--skip <id,...>] [--dry-run] [--uninstall] [--no-self-update]
+       agent-setup --bump [--dry-run]    (maintainers: move config.json pins to the newest upstream releases)`;
+
+// Rewrites each source's pinned "tag" in config.json to its newest release and reports upstream
+// skills/agents that appeared since the previous pin but are not on the allowlists.
+function bump(configPath, cacheDir, dryRun) {
+  if (isInstallClone(dirname(configPath))) {
+    throw new Error("--bump edits config.json; run it in a development clone of agent-setup, not the installed copy");
+  }
+  const config = JSON.parse(readFileSync(configPath, "utf8"));
+  let changed = false;
+  for (const src of config.sources) {
+    if (src.path) continue;
+    let latest;
+    try {
+      latest = resolveLatestTag(src.repo);
+    } catch (err) {
+      if (!src.optional) throw err;
+      console.log(`warning: ${src.id}: could not be reached, pin left at ${src.tag ?? "(none)"} (${firstLine(err.stderr || err.message)})`);
+      continue;
+    }
+    if (src.tag === latest) {
+      console.log(`${src.id}: ${latest} (already newest)`);
+      continue;
+    }
+    console.log(`${src.id}: ${src.tag ?? "(unpinned)"} -> ${latest}`);
+    reportCatalogChanges(src, latest, cacheDir);
+    src.tag = latest;
+    changed = true;
+  }
+  if (!changed) return;
+  if (dryRun) return console.log("dry run: config.json not changed");
+  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n");
+  console.log(`updated ${configPath}; run the tests and a --dry-run against a scratch repo, then commit and tag a release`);
+}
+
+function reportCatalogChanges(src, latest, cacheDir) {
+  if (!src.include && !src.agents?.include) return;
+  const catalog = (tag) => {
+    const { dir } = fetchTag(src.repo, tag, cacheDir, src.id);
+    return {
+      skills: discoverSkills(dir, src.discover).map((s) => s.name),
+      agents: src.agents ? discoverAgents(dir, src.agents.dir).map((a) => a.name) : [],
+    };
+  };
+  const next = catalog(latest);
+  const prev = src.tag && isReleaseTag(src.tag) ? catalog(src.tag) : null;
+  for (const [kind, include] of [["skills", src.include], ["agents", src.agents?.include]]) {
+    if (!include) continue;
+    const missing = include.filter((n) => !next[kind].includes(n));
+    if (missing.length) console.log(`warning: ${src.id}: allowlisted ${kind} missing in ${latest}: ${missing.join(", ")}`);
+    if (!prev) continue;
+    const fresh = next[kind].filter((n) => !prev[kind].includes(n) && !include.includes(n));
+    if (fresh.length) console.log(`notice: ${src.id}: ${fresh.length} new upstream ${kind} not on the allowlist: ${fresh.join(", ")}`);
+  }
+}
 
 const firstLine = (text) => String(text).split(/\r?\n/).find((l) => l.trim())?.trim() ?? "unknown error";
 

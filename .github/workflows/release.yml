@@ -1,0 +1,24 @@
+name: release
+
+# Pushing a vX.Y.Z tag publishes a GitHub release with the installers attached, so
+# https://github.com/jwat-hillrom/agent-setup/releases/latest/download/install.ps1 (and install.sh)
+# always serve the newest released installer.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - run: node --test test/
+      - run: gh release create "$GITHUB_REF_NAME" install.ps1 install.sh --title "$GITHUB_REF_NAME" --generate-notes --verify-tag
+        env:
+          GH_TOKEN: ${{ github.token }}

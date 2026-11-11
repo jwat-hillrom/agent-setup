@@ -10,7 +10,7 @@
 .EXAMPLE
   .\install.ps1
 .EXAMPLE
-  irm https://raw.githubusercontent.com/jwat-hillrom/agent-setup/main/install.ps1 | iex
+  irm https://github.com/jwat-hillrom/agent-setup/releases/latest/download/install.ps1 | iex
 #>
 [CmdletBinding()]
 param(
@@ -64,13 +64,18 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) { Install-WithWinget '
 if ((Get-NodeMajor) -lt $MinNodeMajor) { Install-WithWinget 'OpenJS.NodeJS.LTS' "Node.js $MinNodeMajor or newer" }
 if ((Get-NodeMajor) -lt $MinNodeMajor) { throw "Node.js $MinNodeMajor or newer is not on PATH yet. Open a new terminal and re-run." }
 
-if (Test-Path -LiteralPath (Join-Path $ToolDir '.git')) {
-    try { Invoke-Native git -C $ToolDir pull --ff-only --quiet }
-    catch { Write-Warning "Could not update the existing tool clone, continuing with what is installed: $_" }
-} else {
+if (-not (Test-Path -LiteralPath (Join-Path $ToolDir '.git'))) {
     New-Item -ItemType Directory -Force -Path (Split-Path -Parent $ToolDir) | Out-Null
-    Invoke-Native git clone --quiet --depth 1 -- $Repo $ToolDir
+    Invoke-Native git clone --quiet --no-checkout --depth 1 -- $Repo $ToolDir
 }
+# Installs run the newest release tag, never untagged commits on the default branch.
+try { Invoke-Native git -C $ToolDir fetch --quiet --force --depth 1 origin '+refs/tags/*:refs/tags/*' }
+catch { Write-Warning "Could not fetch release tags, continuing with what is installed: $_" }
+$tag = @(& git -C $ToolDir tag --list) | Where-Object { $_ -match '^v?\d+\.\d+\.\d+$' } |
+    Sort-Object { [version]($_ -replace '^v', '') } | Select-Object -Last 1
+if (-not $tag) { throw "No release tag (vX.Y.Z) found in $Repo." }
+Invoke-Native git -C $ToolDir -c advice.detachedHead=false checkout --quiet --force --detach $tag
+Invoke-Native git -C $ToolDir config agent-setup.install true
 
 New-Item -ItemType Directory -Force -Path $BinDir | Out-Null
 $shim = Join-Path $BinDir 'agent-setup.cmd'

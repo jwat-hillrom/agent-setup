@@ -14,16 +14,24 @@ Sets up a repository for AI-assisted work in VS Code Copilot Chat. It installs a
 Windows (PowerShell):
 
 ```powershell
-irm https://raw.githubusercontent.com/jwat-hillrom/agent-setup/main/install.ps1 | iex
+irm https://github.com/jwat-hillrom/agent-setup/releases/latest/download/install.ps1 | iex
 ```
 
 macOS / Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/jwat-hillrom/agent-setup/main/install.sh | bash
+curl -fsSL https://github.com/jwat-hillrom/agent-setup/releases/latest/download/install.sh | bash
 ```
 
-The installer checks Git and Node 20+ (on confirmation it installs them with winget or Homebrew; on Linux it tells you what to install), clones this tool to a per-user folder, and adds an `agent-setup` command. Re-running it updates everything. If your security tooling blocks piping a script into the shell, download `install.ps1` or `install.sh` and run it directly.
+The installer checks Git and Node 20+ (on confirmation it installs them with winget or Homebrew; on Linux it tells you what to install), clones this tool to a per-user folder at its newest release, and adds an `agent-setup` command. Re-running it updates everything. If your security tooling blocks piping a script into the shell, download `install.ps1` or `install.sh` from the [latest release](https://github.com/jwat-hillrom/agent-setup/releases/latest) and run it directly.
+
+To pass installer flags through the one-liner on Windows, run the downloaded text as a script block instead of piping it to `iex`:
+
+```powershell
+& ([scriptblock]::Create((irm https://github.com/jwat-hillrom/agent-setup/releases/latest/download/install.ps1))) -Yes -NoPath
+```
+
+On macOS / Linux, pass them after `bash -s --`: `curl -fsSL <url> | bash -s -- --yes --no-path`.
 
 The Taste skill's own scripts need Node 22+ and Chrome, Edge or Chromium.
 
@@ -34,23 +42,26 @@ cd <your-repo>
 agent-setup
 ```
 
-Then run `/pocock-setup-matt-pocock-skills` once in the repo. The command pulls its own clone first (quietly, and it carries on if offline), so the tool stays current.
+Then run `/pocock-setup-matt-pocock-skills` once in the repo. The command first moves its own clone to the newest agent-setup release (quietly, and it carries on if offline), so the tool stays current.
 
 On first run you may be asked to sign in to GitHub: the Baxter skills come from a private repository. On Windows, Git Credential Manager opens a browser sign-in. On macOS and Linux, GitHub does not accept passwords for git, so run `gh auth login` or use a credential helper with a personal access token (authorize it for SSO if your organization requires that). If that source can't be fetched (no access, offline), it is skipped with a warning and anything it installed earlier is kept. Every other source is required and stops the run before anything is written.
 
-Options: `--repo <dir>`, `--skip <id,...>` (removes that source's items), `--update`, `--dry-run`, `--uninstall`, `--no-self-update`. Test seams: `--config <file>`, `--cache-dir <dir>`; installer flags `-ToolDir`, `-BinDir`, `-Repo`, `-NoPath`, `-Yes` (`--tool-dir`, `--bin-dir`, `--repo`, `--no-path`, `--yes` in `install.sh`).
+Options: `--repo <dir>`, `--skip <id,...>` (removes that source's items), `--dry-run`, `--uninstall`, `--no-self-update`. `--update` only affects a source without a pinned `tag` in `config.json`. Test seams: `--config <file>`, `--cache-dir <dir>`; installer flags `-ToolDir`, `-BinDir`, `-Repo`, `-NoPath`, `-Yes` (`--tool-dir`, `--bin-dir`, `--repo`, `--no-path`, `--yes` in `install.sh`).
 
 ## Trust model
 
-The tool updates itself by fast-forwarding its own clone of this repository's default branch before each run, then runs the result. Anyone who can push to that branch can change what runs on every workstation, so keep the branch protected. The sources it installs are different: they are pinned to release tags, and a new tag only reaches a repo with `--update`.
+Workstations only ever run released code. The installers are downloaded from the latest GitHub release, the installed clone is checked out at the newest `vX.Y.Z` tag, and before each run the tool moves itself to a newer tag if one exists. Untagged commits on `main` never reach a workstation. Anyone who can push a `v*` tag can still change what runs everywhere, so tags are protected by a repository ruleset (no update or deletion) and `main` cannot be force-pushed or deleted.
+
+The installed skills and agents come from versions pinned in `config.json`, so every workstation and every repo gets the same content for a given agent-setup release. New upstream versions arrive only through a new agent-setup release (see [Release](#release)).
 
 ## How it behaves
 
 - Skills are copied to `.github/skills/<prefix>-<name>` and agents to `.github/agents/<prefix>-<name>.agent.md`. Colons are not valid in skill names, so prefixes are hyphenated (`/pocock-wayfinder`).
-- Each source is fetched at its latest stable release tag (`vX.Y.Z`). The tag is recorded in `.github/agent-setup.lock.json` (local to the machine) and reused until you pass `--update`, which also lists new upstream ECC skills and agents that are not on the allowlists.
+- Each source is fetched at the release tag pinned in `config.json` (`"tag": "vX.Y.Z"`). What was installed is recorded in `.github/agent-setup.lock.json`, which is local to the machine and used for clean-up and `--uninstall`. A source without a pinned tag uses its latest release and keeps it until `--update`. Cached checkouts of older tags are removed after a successful run.
+- Copying skills out of their source tree would leave cross-references stale, so installed Markdown is rewritten. Unambiguous references to a sibling from the same source get the prefix: `/name` commands, `` `name` skill ``, `` skill: `name` `` and names after a "Skill tool" mention on the same line. Bare backticked words are left alone, because sources also use them for labels (for example wayfinder's `research` tickets). Relative links into another installed skill point at its installed folder, and links to upstream files that are not installed (such as ECC rules) point at GitHub at the pinned tag.
 - Everything installed, the lock file and `.github/instructions/agent-setup.instructions.md` are excluded through a managed block in `.git/info/exclude`, so `git status` stays clean. `.taste-skill/` is excluded too. Folders matching `.github/skills/<prefix>-*` are reserved for this tool; a same-named item it did not create is left alone with a warning.
 - ECC agents keep only `name`, `description` and `tools`. Claude tool names are mapped to Copilot aliases (`Read` to `read`, `Grep`/`Glob` to `search`, `Bash` to `execute`, `Edit`/`Write` to `edit`), `model` is dropped, and "MUST BE USED" / "PROACTIVELY" sentences are removed from descriptions so ECC agents do not compete with the Pocock flow. ECC rules are not installed.
-- `agent-setup.instructions.md` tells the agent how the sources relate: repo docs first, Pocock owns the workflow, ECC adds depth, Baxter is authoritative for Nexus UI over Taste, and a bare skill name inside a skill means the prefixed one.
+- `agent-setup.instructions.md` tells the agent how the sources relate: repo docs first, Pocock owns the workflow, ECC adds depth, Baxter is authoritative for Nexus UI over Taste, and any bare skill name the rewrite left alone means the prefixed one.
 - If the same skills are also installed as user-level VS Code plugins or in `~/.copilot/skills`, the tool warns because they will appear twice.
 
 ## Develop
@@ -59,4 +70,12 @@ The tool updates itself by fast-forwarding its own clone of this repository's de
 node --test test/
 ```
 
-Tests use local fixture git remotes and need no network (the installer tests also run `install.ps1` or `install.sh`; the shell one needs bash). `install.ps1` and `install.sh` must change together. Not covered by tests: the winget/Homebrew install paths for missing Git or Node.
+Tests use local fixture git remotes and need no network (the installer tests also run `install.ps1` or `install.sh`; the shell one needs bash). The installer tests replace `winget`, `brew`, `git` and `node` with stub commands to cover the paths for missing or outdated prerequisites. CI runs the suite on Windows, macOS and Linux. `install.ps1` and `install.sh` must change together.
+
+## Release
+
+1. To take new upstream versions, run `node agent-setup.mjs --bump` in a development clone. It rewrites the pinned tags in `config.json`, warns about allowlisted names that disappeared, and lists new upstream ECC skills and agents that are not on the allowlists. Use `--bump --dry-run` to preview. The Baxter source is pinned the same way, so a Baxter skill change needs a `vX.Y.Z` tag in `jwat-hillrom/agent-skills` and then a bump here.
+2. Run `node --test test/` and `node agent-setup.mjs --dry-run --repo <scratch repo>`, then commit to `main` and wait for CI to pass.
+3. Tag the commit and push the tag: `git tag v0.3.0 && git push origin v0.3.0`. The release workflow runs the tests again, then publishes a GitHub release with `install.ps1` and `install.sh` attached. Workstations follow tags, not releases, and pick up the new tag on their next `agent-setup` run, so only tag a commit that has already passed CI.
+
+Tags cannot be moved or deleted. To undo a bad release, fix it on `main` and release a higher version.
