@@ -5,5 +5,5 @@
   "type": "module",
   "bin": { "agent-setup": "./agent-setup.mjs" },
   "engines": { "node": ">=20" },
-  "scripts": { "test": "node --test test/" }
+  "scripts": { "test": "node --test" }
 }

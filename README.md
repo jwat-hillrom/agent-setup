@@ -67,7 +67,7 @@ The installed skills and agents come from versions pinned in `config.json`, so e
 ## Develop
 
 ```sh
-node --test test/
+node --test
 ```
 
 Tests use local fixture git remotes and need no network (the installer tests also run `install.ps1` or `install.sh`; the shell one needs bash). The installer tests replace `winget`, `brew`, `git` and `node` with stub commands to cover the paths for missing or outdated prerequisites. CI runs the suite on Windows, macOS and Linux. `install.ps1` and `install.sh` must change together.
@@ -75,7 +75,7 @@ Tests use local fixture git remotes and need no network (the installer tests als
 ## Release
 
 1. To take new upstream versions, run `node agent-setup.mjs --bump` in a development clone. It rewrites the pinned tags in `config.json`, warns about allowlisted names that disappeared, and lists new upstream ECC skills and agents that are not on the allowlists. Use `--bump --dry-run` to preview. The Baxter source is pinned the same way, so a Baxter skill change needs a `vX.Y.Z` tag in `jwat-hillrom/agent-skills` and then a bump here.
-2. Run `node --test test/` and `node agent-setup.mjs --dry-run --repo <scratch repo>`, then commit to `main` and wait for CI to pass.
+2. Run `node --test` and `node agent-setup.mjs --dry-run --repo <scratch repo>`, then commit to `main` and wait for CI to pass.
 3. Tag the commit and push the tag: `git tag v0.3.0 && git push origin v0.3.0`. The release workflow runs the tests again, then publishes a GitHub release with `install.ps1` and `install.sh` attached. Workstations follow tags, not releases, and pick up the new tag on their next `agent-setup` run, so only tag a commit that has already passed CI.
 
 Tags cannot be moved or deleted. To undo a bad release, fix it on `main` and release a higher version.
